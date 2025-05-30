@@ -262,7 +262,7 @@ fig, ax = plt.subplots(2, 1, figsize=(12, 9))
 
 # Plot only real and final adjusted simulated values
 ax[0].plot(range(frames), real_velocities_1d, label='Real Wind Speed', marker='o')
-ax[0].plot(range(frames), adjusted_velocities_1d, label='Adjusted Simulated Speed (Regression)', marker='s')
+ax[0].plot(range(frames), adjusted_velocities_1d, label='Adjusted Simulated Speed', marker='s')
 ax[0].set_xlabel("Time (hours)")
 ax[0].set_ylabel("Wind Speed (units)")
 ax[0].set_title("Wind Speed Comparison")
