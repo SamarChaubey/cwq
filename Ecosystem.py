@@ -1,16 +1,8 @@
-import requests
-from lambeq import DepCCGParser, IQPAnsatz
-from discopy.quantum import Circuit
-from qiskit import transpile, QuantumCircuit
 from qiskit_ibm_provider import IBMProvider
-from qiskit.visualization import plot_histogram
 import numpy as np
 import os
 from dotenv import load_dotenv
-from qiskit.circuit.library import RealAmplitudes
-from qiskit.primitives import Estimator
-from qiskit.quantum_info import SparsePauliOp
-from qiskit_algorithms.optimizers import COBYLA
+from qiskit_algorithms.optimizers import SPSA  
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
@@ -54,9 +46,9 @@ def evaluate_cost(params):
     cost = collapse_cost(x_vals, y_vals)
     return cost / 100.0  # Normalize
 
-# === STEP 4: Quantum Optimization via COBYLA ===
+# === STEP 4: Quantum Optimization via SPSA ===
 def hybrid_quantum_optimize(cost_fn, num_params=4):
-    optimizer = COBYLA(maxiter=100)
+    optimizer = SPSA(maxiter=100)
 
     def wrapped_cost(theta):
         return cost_fn(theta)
