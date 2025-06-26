@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 from qiskit_algorithms.optimizers import SPSA  
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+from qiskit.primitives import Estimator
+from qiskit.quantum_info import SparsePauliOp
+from qiskit import QuantumCircuit
 
 # Load environment variables from .env file
 load_dotenv()
@@ -12,9 +15,22 @@ token = os.getenv("IBM_QUANTUM_TOKEN")
 provider = IBMProvider(token=token)
 backend = provider.get_backend('ibm_brisbane')
 
-
 # Set random seed for reproducibility
 np.random.seed(42)
+
+# === Quantum Ansatz and Observable ===
+def build_ansatz(params):
+    # Example: 2-qubit ansatz, can be expanded
+    qc = QuantumCircuit(2)
+    qc.ry(params[0], 0)
+    qc.ry(params[1], 1)
+    qc.cx(0, 1)
+    return qc
+
+observable = SparsePauliOp.from_list([("ZZ", 1.0)])  # Example observable
+
+estimator = Estimator(options={"backend": backend})
+
 # === STEP 1: Classical Ecosystem Simulator ===
 def simulate_lotka_volterra(t_span, y0, params, t_eval=None):
     alpha, beta, gamma, delta = params
@@ -35,20 +51,28 @@ def collapse_cost(x_vals, y_vals, epsilon=0.1):
             return (len(x_vals) - i) ** 2  # Penalize early collapse
     return 0  # No collapse
 
-# === STEP 3: Cost Evaluation Wrapper ===
+# === STEP 3: Hybrid Quantum-Classical Cost Evaluation Wrapper ===
 def evaluate_cost(params):
-    alpha, beta, gamma, delta = np.abs(params)  # Ensure positivity
+    # Classical part
+    alpha, beta, gamma, delta = np.abs(params[:4])  # Ensure positivity
     t_span = (0, 25)
     y0 = [1.0, 1.0]  # Initial prey and predator populations
     t_eval = np.linspace(*t_span, 200)
-
     t, (x_vals, y_vals) = simulate_lotka_volterra(t_span, y0, [alpha, beta, gamma, delta], t_eval)
-    cost = collapse_cost(x_vals, y_vals)
-    return cost / 100.0  # Normalize
+    collapse = collapse_cost(x_vals, y_vals)
+
+    # Quantum part (use next 2 params for ansatz)
+    qc = build_ansatz(params[4:6])
+    q_result = estimator.run([qc], [observable]).result()
+    quantum_val = np.real(q_result.values[0])
+
+    # Combine: weight collapse and quantum value (tune weights as needed)
+    cost = collapse / 100.0 + 0.1 * abs(quantum_val)
+    return cost
 
 # === STEP 4: Quantum Optimization via SPSA ===
-def hybrid_quantum_optimize(cost_fn, num_params=4):
-    optimizer = SPSA(maxiter=100)
+def hybrid_quantum_optimize(cost_fn, num_params=6):
+    optimizer = SPSA(maxiter=20)  # Reduce for QPU, increase for simulator
 
     def wrapped_cost(theta):
         return cost_fn(theta)
@@ -59,7 +83,7 @@ def hybrid_quantum_optimize(cost_fn, num_params=4):
 
 # === STEP 5: Run Optimization ===
 best_params, best_cost = hybrid_quantum_optimize(evaluate_cost)
-alpha, beta, gamma, delta = np.abs(best_params)
+alpha, beta, gamma, delta = np.abs(best_params[:4])
 
 print(f"\n🔧 Best Parameters:")
 print(f"  α (prey birth rate): {alpha:.4f}")
