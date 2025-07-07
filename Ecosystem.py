@@ -9,27 +9,28 @@ from qiskit.quantum_info import SparsePauliOp
 from qiskit_algorithms.optimizers import SPSA
 from qiskit_ibm_runtime import QiskitRuntimeService, EstimatorV2 as Estimator
 
-# === ACCOUNT SETUP ===
+# === Load token and optional instance, no saving to disk ===
 load_dotenv()
-IBM_QUANTUM_TOKEN="iVop7ecx6YavrViH2SNzxQnCpiE5Z5QawRU1bvnWLlO5"
-token = IBM_QUANTUM_TOKEN
+TOKEN = os.getenv("IBM_QUANTUM_TOKEN")
+INSTANCE = os.getenv("IBM_QUANTUM_INSTANCE")  # Optional: your CRN or instance name
 
-# Save credentials locally (one-time)
-QiskitRuntimeService.save_account(
-    channel="ibm_quantum",
-    token=token,
-    overwrite=True,
-    set_as_default=True
+if not TOKEN:
+    raise ValueError("Missing IBM_QUANTUM_TOKEN in .env – aborting.")
+
+service = QiskitRuntimeService(
+    channel="ibm_quantum",  # Use new platform; equivalent to "ibm_cloud" :contentReference[oaicite:0]{index=0}
+    token=TOKEN,
+    instance=INSTANCE
 )
 
-# Load service and choose backend
-service = QiskitRuntimeService()
-backend = service.backend(name="ibm_brisbane")  # or use least_busy()
+# Quick check that authentication works
+print("Available backends:", service.backends())
 
-# Instantiate Estimator primitive
+# === Estimator setup ===
+backend = service.backend("ibm_brisbane")
 estimator = Estimator(mode=backend, options={"default_shots": 1024})
 
-# === QUANTUM & CLASSICAL FUNCTIONS ===
+# === Core Algorithm ===
 np.random.seed(42)
 
 def build_ansatz(params):
@@ -52,24 +53,22 @@ def simulate_lotka_volterra(t_span, y0, params, t_eval=None):
 def collapse_cost(x_vals, y_vals, eps=0.1):
     for i, (x, y) in enumerate(zip(x_vals, y_vals)):
         if x < eps or y < eps:
-            return (len(x_vals) - i) ** 2
+            return (len(x_vals) - i)**2
     return 0
 
 def evaluate_cost(params):
     alpha, beta, gamma, delta = np.abs(params[:4])
-    t_span = (0, 25)
-    t_eval = np.linspace(*t_span, 200)
-    t_vals, (x_vals, y_vals) = simulate_lotka_volterra(t_span, [1, 1],
-                                                       [alpha, beta, gamma, delta],
-                                                       t_eval)
-    collapse = collapse_cost(x_vals, y_vals)
+    t, (x, y) = simulate_lotka_volterra((0, 25), [1,1],
+                                        [alpha, beta, gamma, delta],
+                                        np.linspace(0,25,200))
+    collapse = collapse_cost(x, y)
 
     qc = build_ansatz(params[4:6])
     job = estimator.run([(qc, observable, [params[4:6]])])
-    qres = job.result()[0]
-    qval = np.real(qres.data.evs[0])
+    ev = job.result()[0].data.evs[0]
+    quantum_term = abs(np.real(ev))
 
-    return collapse / 100.0 + 0.1 * abs(qval)
+    return collapse / 100.0 + 0.1 * quantum_term
 
 def hybrid_quantum_optimize(cost_fn, num_params=6):
     opt = SPSA(maxiter=20)
@@ -77,31 +76,28 @@ def hybrid_quantum_optimize(cost_fn, num_params=6):
     res = opt.minimize(fun=cost_fn, x0=x0)
     return res.x, res.fun
 
-# === RUN HYBRID OPTIMIZATION ===
+# === Run Optimization ===
 best_theta, best_cost = hybrid_quantum_optimize(evaluate_cost)
 alpha, beta, gamma, delta = np.abs(best_theta[:4])
+print(f"\n🔧 Best params: α={alpha:.4f}, β={beta:.4f}, γ={gamma:.4f}, δ={delta:.4f}")
+print(f"Optimized cost: {best_cost:.4f}")
 
-print(f"\n🔧 Best Parameters:"
-      f"\n  α: {alpha:.4f}, β: {beta:.4f}, γ: {gamma:.4f}, δ: {delta:.4f}"
-      f"\n  Optimized cost: {best_cost:.4f}")
-
-# === FINAL SIMULATION & PLOT ===
-t, (x_vals, y_vals) = simulate_lotka_volterra((0, 25), [1, 1],
-                                             [alpha, beta, gamma, delta],
-                                             np.linspace(0, 25, 200))
+# === Final Simulation & Plot ===
+t, (x, y) = simulate_lotka_volterra((0,25), [1,1],
+                                     [alpha, beta, gamma, delta],
+                                     np.linspace(0,25,200))
 epsilon = 0.1
-collapse_time = next((tv for tv, xv, yv in zip(t, x_vals, y_vals)
-                      if xv < epsilon or yv < epsilon), t[-1])
-print(f"⏳ Collapse delayed until t = {collapse_time:.2f}")
+collapse_time = next((tv for tv, xv, yv in zip(t, x, y) if xv<epsilon or yv<epsilon), t[-1])
+print(f"⏳ Collapse at t = {collapse_time:.2f}")
 
-plt.figure(figsize=(10, 5))
-plt.plot(t, x_vals, label="Prey", color="blue")
-plt.plot(t, y_vals, label="Predator", color="red")
-plt.axhline(epsilon, color="gray", linestyle="--", label="Threshold ε")
-plt.axvline(collapse_time, color="purple", linestyle=":", label=f"Collapse @ t={collapse_time:.2f}")
+plt.figure(figsize=(10,5))
+plt.plot(t, x, label="Prey", color="blue")
+plt.plot(t, y, label="Predator", color="red")
+plt.axhline(epsilon, linestyle="--", color="gray", label="Threshold ε")
+plt.axvline(collapse_time, linestyle=":", color="purple", label=f"Collapse @ t={collapse_time:.2f}")
 plt.xlabel("Time")
 plt.ylabel("Population")
-plt.title("Predator–Prey Dynamics with Quantum‑Optimized Parameters")
+plt.title("Predator–Prey Dynamics (Quantum‑Optimized)")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
