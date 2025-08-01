@@ -1,14 +1,16 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
-from qiskit_algorithms.optimizers import SPSA  # ✅ Qiskit 2.x compatible
-from qiskit.primitives import BaseSamplerV1        # ✅ Qiskit 2.x compatible
+from qiskit_aer.primitives import Estimator as AerEstimator
+from qiskit_algorithms.optimizers import SPSA
 
+
+# 📌 Ensure reproducibility
 np.random.seed(42)
 
-# === Quantum ansatz circuit ===
 def build_ansatz(params):
     qc = QuantumCircuit(2)
     qc.ry(params[0], 0)
@@ -16,73 +18,78 @@ def build_ansatz(params):
     qc.cx(0, 1)
     return qc
 
-# === Observable (Pauli ZZ) ===
 observable = SparsePauliOp.from_list([("ZZ", 1.0)])
 
-# === Classical predator–prey dynamics ===
-def simulate_lotka_volterra(t_span, y0, params, t_eval=None):
-    alpha, beta, gamma, delta = params
+def simulate_lv(params, x0, y0, steps=200):
+    α, β, γ, δ = params
     def lv(t, z):
         x, y = z
-        return [alpha * x - beta * x * y, delta * x * y - gamma * y]
-    sol = solve_ivp(lv, t_span, y0, t_eval=t_eval, method="RK45")
+        return [α * x - β * x * y, δ * x * y - γ * y]
+    t = np.linspace(0, 25, steps)
+    sol = solve_ivp(lv, (0, 25), (x0, y0), t_eval=t)
     return sol.t, sol.y
 
-# === Collapse penalty ===
-def collapse_cost(x_vals, y_vals, eps=0.1):
-    for i, (x, y) in enumerate(zip(x_vals, y_vals)):
+def collapse_cost(xs, ys, eps=0.1):
+    for i, (x, y) in enumerate(zip(xs, ys)):
         if x < eps or y < eps:
-            return (len(x_vals) - i) ** 2
+            return (len(xs) - i) ** 2
     return 0
 
-# === Combined cost: classical + quantum ===
-def evaluate_cost(params):
-    alpha, beta, gamma, delta = np.abs(params[:4])
-    t, (x, y) = simulate_lotka_volterra((0, 25), [1, 1],
-                                        [alpha, beta, gamma, delta],
-                                        np.linspace(0, 25, 200))
+
+# Quantum primitive (Aer Estimator)
+estimator = AerEstimator()
+
+def evaluate_cost(params, x0, y0):
+    # Classical collapse cost
+    t, (x, y) = simulate_lv(np.abs(params[:4]), x0, y0)
     collapse = collapse_cost(x, y)
 
+    # Quantum expectation ⟨ZZ⟩
     qc = build_ansatz(params[4:6])
-    estimator = BaseSamplerV1()
-    job = estimator.run(circuits=[qc], observables=[observable])
-    result = job.result()
+    result = estimator.run(
+        circuits=[qc],
+        observables=[observable],
+        parameter_values=[[]]
+    ).result()
     ev = result.values[0]
-    quantum_term = abs(np.real(ev))
+    return collapse / 100 + 0.1 * abs(ev)
 
-    return collapse / 100.0 + 0.1 * quantum_term
+def optimize_lv(x0, y0, α, β, γ, δ):
+    optimizer = SPSA(maxiter=30)
+    x_init = np.array([α, β, γ, δ, 0.1, 0.1])
+    return optimizer.minimize(fun=lambda p: evaluate_cost(p, x0, y0), x0=x_init)
 
-# === SPSA optimization ===
-def hybrid_quantum_optimize(cost_fn, num_params=6):
-    opt = SPSA(maxiter=20)
-    x0 = np.random.uniform(0.1, 1.0, size=num_params)
-    res = opt.minimize(fun=cost_fn, x0=x0)
-    return res.x, res.fun
+if __name__ == "__main__":
+    x0, y0, α, β, γ, δ = (float(input(prompt) or default)
+                         for prompt, default in [
+                             ("Initial prey x0: ", 1.0),
+                             ("Initial predator y0: ", 1.0),
+                             ("α (prey growth): ", 1.0),
+                             ("β (predation): ", 0.5),
+                             ("γ (predator death): ", 1.0),
+                             ("δ (efficiency): ", 0.5),
+                         ])
+    print("Running hybrid quantum-classical optimization...")
+    res = optimize_lv(x0, y0, α, β, γ, δ)
 
-# === Run optimization ===
-best_theta, best_cost = hybrid_quantum_optimize(evaluate_cost)
-alpha, beta, gamma, delta = np.abs(best_theta[:4])
-print(f"\n🔧 Best params: α={alpha:.4f}, β={beta:.4f}, γ={gamma:.4f}, δ={delta:.4f}")
-print(f"Optimized cost: {best_cost:.4f}")
+    θ = res.x
+    α_opt, β_opt, γ_opt, δ_opt = np.abs(θ[:4])
+    print(f"✅ Optimized: α={α_opt:.4f}, β={β_opt:.4f}, γ={γ_opt:.4f}, δ={δ_opt:.4f}")
+    print(f"Cost: {res.fun:.4f} (calls: {res.nfev})")
 
-# === Final simulation and collapse time ===
-t, (x, y) = simulate_lotka_volterra((0, 25), [1, 1],
-                                     [alpha, beta, gamma, delta],
-                                     np.linspace(0, 25, 200))
-epsilon = 0.1
-collapse_time = next((tv for tv, xv, yv in zip(t, x, y) if xv < epsilon or yv < epsilon), t[-1])
-print(f"⏳ Collapse at t = {collapse_time:.2f}")
+    # Final collapse prediction
+    t, (x, y) = simulate_lv([α_opt, β_opt, γ_opt, δ_opt], x0, y0)
+    eps = 0.1
+    collapse_t = next((tv for tv, xv, yv in zip(t, x, y) if xv < eps or yv < eps), t[-1])
+    print(f"⏳ Collapse predicted at t = {collapse_t:.2f}")
 
-# === Plot ===
-plt.figure(figsize=(10, 5))
-plt.plot(t, x, label="Prey", color="blue")
-plt.plot(t, y, label="Predator", color="red")
-plt.axhline(epsilon, linestyle="--", color="gray", label="Threshold ε")
-plt.axvline(collapse_time, linestyle=":", color="purple", label=f"Collapse @ t={collapse_time:.2f}")
-plt.xlabel("Time")
-plt.ylabel("Population")
-plt.title("Predator–Prey Dynamics (Quantum‑Optimized)")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+    # Plotting
+    plt.figure(figsize=(10, 5))
+    plt.plot(t, x, label="Prey", color="blue")
+    plt.plot(t, y, label="Predator", color="red")
+    plt.axhline(eps, linestyle="--", color="gray")
+    plt.axvline(collapse_t, linestyle=":", color="purple", label=f"Collapse @ t={collapse_t:.2f}")
+    plt.xlabel("Time"); plt.ylabel("Population")
+    plt.title("Predator–Prey Dynamics — Optimized via QNSPSA")
+    plt.legend(); plt.grid(True); plt.tight_layout()
+    plt.show()
